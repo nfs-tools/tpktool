@@ -40,11 +40,20 @@ T readGeneric(std::ifstream &stream, size_t size = sizeof(T))
     return result;
 }
 
-template <typename T>
+template<typename T>
 void writeGeneric(std::ofstream &stream, T data, size_t size = sizeof(T))
 {
 //    printf("[debug] write %s (%zu bytes)\n", typeid(T).name(), size);
-    stream.write((const char*) &data, size);
+    stream.write((const char *) &data, size);
+}
+
+template<typename T>
+void fill(std::ofstream &stream, T data, int count)
+{
+    for (auto i = 0; i < count; i++)
+    {
+        writeGeneric<T>(stream, data);
+    }
 }
 
 void printStreamPosition(std::ifstream &stream);

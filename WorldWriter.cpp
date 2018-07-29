@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <functional>
 #include <iostream>
 #include <numeric>
@@ -8,6 +9,15 @@
 
 void WorldWriter::Write(std::ofstream &stream, const std::shared_ptr<TexturePack> &texturePack)
 {
+    World_PackInfo packInfo{};
+    memset(&packInfo, '\0', sizeof(World_PackInfo));
+
+    packInfo.hash = texturePack->hash;
+    packInfo.marker = 0x09;
+
+    strcpy(packInfo.name, texturePack->name.c_str());
+    strcpy(packInfo.path, texturePack->path.c_str());
+
     auto textureDataSize = std::accumulate(
             texturePack->textures.begin(),
             texturePack->textures.end(), 0x78,
@@ -16,22 +26,8 @@ void WorldWriter::Write(std::ofstream &stream, const std::shared_ptr<TexturePack
                 return ds + t->dataSize;
             });
 
-//    for (auto i = 0; i < texturePack->textures.size(); ++i)
-//    {
-//        auto texture = texturePack->textures[i];
-//
-//        if (i != texturePack->textures.size() - 1 && texture->dataSize % 32 != 0)
-//        {
-//
-////            texture->padding = (32 - (texture->dataSize % 32)) * 3;
-//
-////            texture->padding = (texture->dataSize % 32) * 3;
-////            printf("Padding for %s: %d\n", texture->name.c_str(), texture->padding);
-//        }
-//
-//        textureDataSize += texture->padding;
-//    }
-
+    auto tpkCapsuleSize = 0;
+    auto tpkChunkSize = 0;
     auto dataChunkSize = 0u;
 
     // 01 00 33 33 - empty
@@ -41,95 +37,93 @@ void WorldWriter::Write(std::ofstream &stream, const std::shared_ptr<TexturePack
     // null
     dataChunkSize += 8 + 0x0C;
 
-    auto ddsInfoSize = (unsigned int) (32 * texturePack->textures.size());
-    auto textureInfoSize = 0u;
-    auto hashTableSize = (unsigned int) (0x8 * texturePack->textures.size());
-
-    auto lastTextureOffset = 0u;
+    auto lastOffset = 0u;
 
     for (auto i = 0; i < texturePack->textures.size(); i++)
-//    for (const auto &texture : texturePack->textures)
     {
         auto texture = texturePack->textures[i];
 
+        printf("texture %s - offset=%d, size=%d, offDiff=%d, sizeMod=%d, sizeMod2=%d, sizeMod3=%d\n",
+               texture->name.c_str(),
+               texture->dataOffset,
+               texture->dataSize,
+               texture->dataOffset - lastOffset,
+               32 - (texture->dataSize % 32),
+               64 - (texture->dataSize % 64),
+               128 - (texture->dataSize % 128));
+        lastOffset = texture->dataOffset + texture->dataSize;
+
+        if (i != texturePack->textures.size() - 1 && texture->dataSize % 128 != 0)
+        {
+            texture->padding = 128 - (texture->dataSize % 128);
+
+            if (texture->padding < 48)
+            {
+                texture->padding = 48;
+            }
+
+            textureDataSize += texture->padding;
+        }
+    }
+
+    auto textureInfoSize = 0;
+    auto hashTableSize = (unsigned int) (texturePack->textures.size() * 8);
+    auto ddsTableSize = (unsigned int) (texturePack->textures.size() * 32);
+
+    for (const auto &texture : texturePack->textures)
+    {
         textureInfoSize += 144;
         textureInfoSize += 1;
         textureInfoSize += texture->name.length();
 
         auto namePad = 4 - textureInfoSize % 4;
         textureInfoSize += namePad;
-
-        texture->padding = (texture->dataOffset - lastTextureOffset);
-
-        if (texture->padding == 0 && i != 0)
-        {
-            texture->padding = (texture->dataSize % 32) * (namePad == 1 ? 5 : namePad + 1);
-        }
-
-        printf("Padding for %s = %d\n", texture->name.c_str(), texture->padding);
-
-        lastTextureOffset = texture->dataOffset + texture->dataSize;
-
-        if (i == 1)
-        {
-            texturePack->textures[0]->padding = texture->padding;
-        }
-//        texture->padding = (texture->dataSize % 32) * 3;
-//        {
-//            texture->padding = (texture->dataSize % 32) * (namePad + 1);
-//        }
     }
 
     dataChunkSize += 8 + textureDataSize;
-    auto tpkChunkSize = 0x7c + 8 + hashTableSize + 8 + textureInfoSize + 8 + ddsInfoSize + 8;
-    auto capsuleSize = tpkChunkSize + 0x8 + 0x38 + 0x8 + ((tpkChunkSize % 32) * 3) + 0x8 + dataChunkSize + 0x8 + 0x78;
+
+    // info
+    tpkChunkSize += 0x8 + 0x7C;
+    // hash table
+    tpkChunkSize += 0x8 + hashTableSize;
+    // DDS info table
+    tpkChunkSize += 0x8 + ddsTableSize;
+    // info table
+    tpkChunkSize += 0x8 + textureInfoSize;
+
+    auto alignSize = 0x78;
+//    auto alignSize = (tpkChunkSize % 32) * 3;
+
+    printf("alignSize = %d\n", alignSize);
+
+    tpkCapsuleSize = (0x8 + tpkChunkSize) + 0x38 + (0x8 + dataChunkSize) + (0x8 + alignSize);
+//    tpkCapsuleSize = (0x8 + tpkChunkSize) + 0x38 + (0x8 + alignSize) + 0x8 + dataChunkSize + 0x8 + 0x78;
 
     writeGeneric<int>(stream, 0xB3300000);
-    writeGeneric<int>(stream, capsuleSize);
+    writeGeneric<int>(stream, tpkCapsuleSize);
 
-    // first null
-    writeGeneric<int>(stream, 0x00000000);
+    writeGeneric<int>(stream, 0x00);
     writeGeneric<int>(stream, 0x30);
 
-    for (auto i = 0; i < 0x30; ++i)
-    {
-        writeGeneric<BYTE>(stream, 0x00);
-    }
+    fill<BYTE>(stream, 0x00, 0x30);
 
     // TPK chunk
     writeGeneric<int>(stream, 0xB3310000);
     writeGeneric<int>(stream, tpkChunkSize);
 
-    // TPK info
+    // info chunk
     writeGeneric<int>(stream, 0x33310001);
     writeGeneric<int>(stream, 0x7C);
 
-    writeGeneric<int>(stream, 0x9);
+    writeGeneric<World_PackInfo>(stream, packInfo);
+    fill<BYTE>(stream, 0x00, 24);
 
-    char name[0x1C];
-    memset(&name, '\0', 0x1C);
-
-    char path[0x40];
-    memset(&path, '\0', 0x40);
-
-    strcpy(name, texturePack->name.data());
-    strcpy(path, texturePack->path.data());
-
-    stream.write(name, 0x1C);
-    stream.write(path, 0x40);
-
-    writeGeneric<int>(stream, texturePack->hash);
-
-    for (auto i = 0; i < 24; ++i)
-    {
-        writeGeneric<BYTE>(stream, 0x00);
-    }
-
-    // Hash table
+    // hashes chunk
     writeGeneric<int>(stream, 0x33310002);
     writeGeneric<int>(stream, hashTableSize);
 
-    for (auto &texture : texturePack->textures)
+    // Write hashes
+    for (const auto &texture : texturePack->textures)
     {
         writeGeneric<int>(stream, texture->texHash);
         writeGeneric<int>(stream, 0);
@@ -197,7 +191,7 @@ void WorldWriter::Write(std::ofstream &stream, const std::shared_ptr<TexturePack
 
     // DDS type info
     writeGeneric<int>(stream, 0x33310005);
-    writeGeneric<int>(stream, ddsInfoSize);
+    writeGeneric<int>(stream, ddsTableSize);
 
     for (auto &texture : texturePack->textures)
     {
@@ -214,9 +208,9 @@ void WorldWriter::Write(std::ofstream &stream, const std::shared_ptr<TexturePack
 
     // pre-data null
     writeGeneric<int>(stream, 0);
-    writeGeneric<int>(stream, (tpkChunkSize % 32) * 3);
+    writeGeneric<int>(stream, alignSize);
 
-    for (auto i = 0; i < (tpkChunkSize % 32) * 3; ++i)
+    for (auto i = 0; i < alignSize; ++i)
     {
         writeGeneric<BYTE>(stream, 0x00);
     }
